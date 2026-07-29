@@ -211,7 +211,7 @@ function App() {
     const captionEntities = content.caption?.entities || [];
     let text = content.text?.text || content.caption?.text || '';
     let media: any = undefined;
-    let fileIds: number[] = [];
+    const fileIds: number[] = [];
     let entities = textEntities.concat(captionEntities).map((e: any) => ({
       offset: e.offset,
       length: e.length,

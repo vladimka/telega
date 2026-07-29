@@ -15,12 +15,8 @@ module.exports = {
     ecmaFeatures: { jsx: true },
     project: ['./tsconfig.main.json', './tsconfig.renderer.json']
   },
-  plugins: ['react-refresh', '@typescript-eslint', 'react'],
+  plugins: ['@typescript-eslint', 'react'],
   rules: {
-    'react-refresh/only-export-components': [
-      'warn',
-      { allowConstantExport: true }
-    ],
     '@typescript-eslint/no-explicit-any': 'warn',
     '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
     'react/react-in-jsx-scope': 'off'

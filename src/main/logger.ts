@@ -22,7 +22,7 @@ function write(type: string, ...args: unknown[]): void {
   console.log(line);
   try {
     appendFileSync(logFile, line + '\n', 'utf-8');
-  } catch { }
+  } catch { /* ignore file write errors */ }
 }
 
 export const logger = {
