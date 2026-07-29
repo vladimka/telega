@@ -93,12 +93,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v$(node -p "require('./package.json').version")-build.${{ github.run_number }}"
+          gh release create "$TAG" --title "Telega $TAG" \
+            --generate-notes --target "${{ github.sha }}" || true
           shopt -s globstar nullglob
-          FILES=(**/*.{AppImage,dmg,exe,zip,deb,rpm,snap,blockmap,yml,yaml})
-          if [ ${#FILES[@]} -gt 0 ]; then
-            gh release create "$TAG" --title "Telega $TAG" \
-              --generate-notes --target "${{ github.sha }}" "${FILES[@]}"
-          else
-            gh release create "$TAG" --title "Telega $TAG" \
-              --generate-notes --target "${{ github.sha }}"
-          fi
+          gh release upload "$TAG" **/*.{AppImage,dmg,exe,zip,deb,rpm,snap,blockmap} \
+            --clobber || true
