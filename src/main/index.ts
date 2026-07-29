@@ -18,6 +18,7 @@ if (!existsSync(tdlibDataPath)) {
 
 let mainWindow: BrowserWindow | null = null;
 let lastAuthState: Record<string, unknown> | null = null;
+let tdlibClient: ReturnType<typeof createClient> | null = null;
 
 async function initializeTDLib() {
   const apiId = parseInt(process.env.TELEGRAM_API_ID || '0');
@@ -76,6 +77,7 @@ async function initializeTDLib() {
     mainWindow?.webContents.send('tdlib-closed');
   });
 
+  tdlibClient = client;
   return client;
 }
 
@@ -123,9 +125,31 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('window-all-closed', () => {
+async function cleanupTDLib() {
+  if (tdlibClient) {
+    try {
+      logger.info('closing TDLib client');
+      await tdlibClient.close();
+      tdlibClient = null;
+      logger.info('TDLib client closed');
+    } catch (e) {
+      logger.error('TDLib close error', e);
+    }
+  }
+}
+
+app.on('window-all-closed', async () => {
   logger.info('window-all-closed');
+  await cleanupTDLib();
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', async (e) => {
+  if (tdlibClient) {
+    e.preventDefault();
+    await cleanupTDLib();
+    app.quit();
+  }
 });
 
 function registerHandlers(client: ReturnType<typeof createClient>) {

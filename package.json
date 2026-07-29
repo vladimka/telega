@@ -1,6 +1,6 @@
 {
   "name": "telega",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Telegram client built with Electron, TypeScript, and TDLib",
   "main": "dist/main/index.js",
   "scripts": {

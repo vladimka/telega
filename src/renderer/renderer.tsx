@@ -6,7 +6,7 @@ type AuthState = 'waitPhoneNumber' | 'waitCode' | 'waitPassword' | 'waitRegistra
 
 type ChatType = 'private' | 'group' | 'channel' | 'secret';
 type Chat = { id: number; title: string; lastMessage?: string; lastMessageId?: number; unreadCount: number; lastMessageTime: number; photo?: any; type: string; chatType: ChatType };
-type Message = { id: number; chatId: number; senderId: number; senderIsChat: boolean; text: string; isOutgoing: boolean; date: number; forwardInfo?: any; contentType: string; photoFileId?: number; photoPath?: string; photoWidth?: number; photoHeight?: number; replyToMsgId?: number; media?: any; fileIds?: number[]; filePaths?: Record<number, string>; entities?: Array<{ offset: number; length: number; type: string; url?: string }> };
+type Message = { id: number; chatId: number; senderId: number; senderIsChat: boolean; text: string; isOutgoing: boolean; date: number; forwardInfo?: any; contentType: string; photoFileId?: number; photoPath?: string; photoWidth?: number; photoHeight?: number; replyToMsgId?: number; media?: any; fileIds?: number[]; filePaths?: Record<number, string>; entities?: Array<{ offset: number; length: number; type: string; url?: string }>; serviceText?: string; sendingState?: string; isRead?: boolean };
 
 function App() {
   const [authState, setAuthState] = useState<AuthState>('waitPhoneNumber');
@@ -27,12 +27,16 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [users, setUsers] = useState<Record<number, { firstName: string; lastName: string }>>({});
   const [replyToId, setReplyToId] = useState<number | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('darkMode') === 'true');
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
   const hasMoreRef = useRef(true);
   const chatListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const lastReadOutboxRef = useRef<Record<number, number>>({});
 
   const toFileUrl = (path: string) => 'file:///' + path.replace(/\\/g, '/').replace(/^\/+/, '');
 
@@ -78,9 +82,27 @@ function App() {
       case 'updateMessageContent':
         setMessages(prev => prev.map(m => m.id === update.message_id ? { ...m, text: update.new_content?.text?.text || m.text } : m));
         break;
+      case 'updateMessageSendSucceeded':
+        setMessages(prev => prev.map(m => {
+          if (m.id === update.old_message_id || m.id === update.new_message_id) {
+            const readId = lastReadOutboxRef.current[m.chatId] || 0;
+            return { ...m, id: update.new_message_id, sendingState: undefined, isRead: readId > 0 && update.new_message_id <= readId };
+          }
+          return m;
+        }));
+        break;
       case 'updateChatReadInbox':
+        setChats(prev => prev.map(c => c.id === update.chat_id ? { ...c, unreadCount: 0 } : c));
+        break;
       case 'updateChatReadOutbox':
         setChats(prev => prev.map(c => c.id === update.chat_id ? { ...c, unreadCount: 0 } : c));
+        if (update.last_read_outbox_message_id) {
+          lastReadOutboxRef.current[update.chat_id] = update.last_read_outbox_message_id;
+        }
+        if (selectedChatIdRef.current === update.chat_id) {
+          const readId = update.last_read_outbox_message_id || 0;
+          if (readId) setMessages(prev => prev.map(m => m.isOutgoing ? { ...m, isRead: m.id <= readId || false } : m));
+        }
         break;
       case 'updateUser': {
         const user = (update as any).user;
@@ -135,6 +157,8 @@ function App() {
     });
     return () => { unsubUpdate(); unsubAuth(); unsubError(); };
   }, [handleUpdate, handleAuthStateChange]);
+
+  const toggleDark = () => setDarkMode(v => { const next = !v; localStorage.setItem('darkMode', String(next)); return next; });
 
   const triggerPhotoDownload = (chat: Chat) => {
     const fileId = chat.photo?.small?.id;
@@ -287,7 +311,20 @@ function App() {
       const voice = content.voice_note || {};
       const fileId = voice.voice?.id;
       if (fileId) fileIds.push(fileId);
-      media = { type: 'voice', fileId, duration: voice.duration };
+      media = { type: 'voice', fileId, duration: voice.duration, waveform: voice.waveform };
+    } else if (content._ === 'messageVideoNote') {
+      contentType = 'videoNote';
+      text = content.caption?.text || '';
+      entities = captionEntities.map((e: any) => ({
+        offset: e.offset,
+        length: e.length,
+        type: e.type?._?.replace('textEntityType', '').toLowerCase() || '',
+        url: e.type?._ === 'textEntityTypeTextUrl' ? e.type.url : undefined,
+      }));
+      const vn = content.video_note || {};
+      const fn = vn.video?.id;
+      if (fn) fileIds.push(fn);
+      media = { type: 'videoNote', fileId: fn, duration: vn.duration, size: vn.length || 200, thumbnail: vn.minithumbnail || vn.thumbnail?.sizes?.[0] };
     } else if (content._ === 'messageAnimation') {
       contentType = 'animation';
       text = content.caption?.text || '';
@@ -310,15 +347,48 @@ function App() {
       media = { type: 'sticker', fileId, width: sticker.width, height: sticker.height, emoji: sticker.emoji, format };
     } else if (content._ === 'messageText') {
       contentType = 'text';
+    } else if (content._ === 'messageChatAddMembers') {
+      contentType = 'service';
+      const ids = content.chat_add_members?.member_user_ids || [];
+      text = ids.length === 1 ? 'User joined the group' : `${ids.length} members joined the group`;
+    } else if (content._ === 'messageChatJoinByLink') {
+      contentType = 'service';
+      text = 'User joined via invite link';
+    } else if (content._ === 'messageChatDeleteMember') {
+      contentType = 'service';
+      text = 'User left the group';
+    } else if (content._ === 'messageChatCreate' || content._ === 'messageBasicGroupCreate') {
+      contentType = 'service';
+      text = content.title ? `Group "${content.title}" created` : 'Group created';
+    } else if (content._ === 'messageChatChangeTitle') {
+      contentType = 'service';
+      text = content.title ? `Group name changed to "${content.title}"` : 'Group name changed';
+    } else if (content._ === 'messageChatChangePhoto') {
+      contentType = 'service';
+      text = 'Group photo changed';
+    } else if (content._ === 'messageChatDeletePhoto') {
+      contentType = 'service';
+      text = 'Group photo removed';
+    } else if (content._ === 'messagePinMessage') {
+      contentType = 'service';
+      text = 'Message pinned';
+    } else if (content._ === 'messageChatUpgrade' || content._ === 'messageChatUpgradeFrom') {
+      contentType = 'service';
+      text = 'Group upgraded';
+    } else if (content._ === 'messageContactRegistered') {
+      contentType = 'service';
+      text = 'User joined Telegram';
     } else {
       contentType = content._?.replace('message', '').toLowerCase() || 'unknown';
     }
     const replyTo = msg.reply_to;
     const replyToMsgId = replyTo?.message_id;
+    const sendingState = msg.sending_state?._;
     return {
       id: msg.id,
       chatId: msg.chat_id,
       senderIsChat: !!msg.sender_id?.chat_id,
+      senderId: msg.sender_id?.user_id || msg.sender_id?.chat_id || 0,
       text,
       isOutgoing: msg.is_outgoing,
       date: msg.date,
@@ -332,6 +402,8 @@ function App() {
       fileIds: fileIds.length ? fileIds : undefined,
       filePaths: undefined,
       entities: entities.length ? entities : undefined,
+      serviceText: contentType === 'service' ? text : undefined,
+      sendingState,
     };
   };
 
@@ -520,6 +592,10 @@ function App() {
     setError('');
     try {
       await window.tdlib.send({ _: 'openChat', chat_id: chatId });
+      const chat = chats.find(c => c.id === chatId);
+      if (chat?.lastMessageId) {
+        window.tdlib.send({ _: 'viewMessages', chat_id: chatId, message_ids: [chat.lastMessageId], force_read: true }).catch(() => {});
+      }
       let result = await window.tdlib.send({
         _: 'getChatHistory',
         chat_id: chatId,
@@ -542,7 +618,9 @@ function App() {
         retries--;
       }
       if ((result as any).total_count != null) {
-        const msgs = ((result as any).messages || []).reverse().map(formatMessage);
+        let msgs = ((result as any).messages || []).reverse().map(formatMessage);
+        const readId = lastReadOutboxRef.current[chatId] || 0;
+        if (readId) msgs = msgs.map(m => m.isOutgoing ? { ...m, isRead: m.id <= readId } : m);
         setMessages(msgs);
         setTimeout(() => {
           if (messagesRef.current && selectedChatIdRef.current === chatId) {
@@ -578,14 +656,6 @@ function App() {
     catch { setNewMessage(text); }
   };
 
-  const handleLogout = async () => {
-    try {
-      await window.tdlib.profile.logout();
-      setAuthState('waitPhoneNumber');
-      setChats([]); setMessages([]); setCurrentUser(null); setSelectedChatId(null);
-    } catch (e) { console.error(e); }
-  };
-
   const filteredChats = chats.filter(c =>
     c.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -600,11 +670,45 @@ function App() {
     });
   }
 
-  return createElement('div', { className: 'app' },
-    createElement('div', { className: 'sidebar' },
+  return createElement('div', { className: `app${darkMode ? ' dark' : ''}` },
+    menuOpen && createElement('div', { className: 'menu-overlay', onClick: () => setMenuOpen(false) }),
+    createElement('div', { className: `sidebar ${menuOpen ? 'menu-open' : ''}` },
       createElement('div', { className: 'sidebar-header' },
-        createElement('img', { src: currentUser?.profile_photo?.small?.local?.path ? toFileUrl(currentUser.profile_photo.small.local.path) : 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="%23e8f0fe"/><text x="50" y="60" text-anchor="middle" font-size="40" fill="%231a73e8">' + (currentUser?.first_name?.[0] || '?') + '</text></svg>' }),
+        createElement('button', { className: 'menu-btn', onClick: () => setMenuOpen(v => !v) },
+          createElement('svg', { width: '22', height: '22', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' },
+            createElement('line', { x1: '3', y1: '6', x2: '21', y2: '6' }),
+            createElement('line', { x1: '3', y1: '12', x2: '21', y2: '12' }),
+            createElement('line', { x1: '3', y1: '18', x2: '21', y2: '18' })
+          )
+        ),
         createElement('h1', null, 'Telega')
+      ),
+      createElement('div', { className: 'menu-panel' },
+        createElement('div', { className: 'menu-user' },
+          createElement('img', { src: currentUser?.profile_photo?.small?.local?.path ? toFileUrl(currentUser.profile_photo.small.local.path) : 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="%23e8f0fe"/><text x="50" y="60" text-anchor="middle" font-size="40" fill="%231a73e8">' + (currentUser?.first_name?.[0] || '?') + '</text></svg>', className: 'menu-user-avatar' }),
+          createElement('div', { className: 'menu-user-info' },
+            createElement('div', { className: 'menu-user-name' }, [currentUser?.first_name, currentUser?.last_name].filter(Boolean).join(' ') || 'User'),
+            createElement('div', { className: 'menu-user-phone' }, currentUser?.phone || '')
+          )
+        ),
+        createElement('div', { className: 'menu-items' },
+          createElement('div', { className: 'menu-item', onClick: toggleDark },
+            createElement('svg', { width: '20', height: '20', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' },
+              darkMode
+                ? createElement('path', { d: 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z' })
+                : createElement('path', { d: 'M12 3a6 6 0 0 0 9 9 6 6 0 1 1-9-9' })
+            ),
+            createElement('span', null, darkMode ? 'Light Mode' : 'Dark Mode')
+          ),
+          createElement('div', { className: 'menu-item', onClick: () => { window.tdlib.profile.logout().then(() => { setAuthState('waitPhoneNumber'); setChats([]); setMessages([]); setCurrentUser(null); setSelectedChatId(null); setMenuOpen(false); }).catch(() => {}); } },
+            createElement('svg', { width: '20', height: '20', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' },
+              createElement('path', { d: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4' }),
+              createElement('polyline', { points: '16 17 21 12 16 7' }),
+              createElement('line', { x1: '21', y1: '12', x2: '9', y2: '12' })
+            ),
+            createElement('span', null, 'Log Out')
+          )
+        )
       ),
       createElement('div', { className: 'search-bar' },
         createElement('input', { type: 'text', placeholder: 'Search', value: searchQuery, onChange: (e: any) => setSearchQuery(e.target.value) })
@@ -667,12 +771,36 @@ function App() {
             const selectedChat = chats.find(c => c.id === selectedChatId);
             const isGroupOrChannel = selectedChat && (selectedChat.chatType === 'group' || selectedChat.chatType === 'channel');
             const chatMessages = messages.filter(m => m.chatId === selectedChatId);
-            return chatMessages.map((msg, i) => {
+            const result: any[] = [];
+            chatMessages.forEach((msg, i) => {
               const prev = i > 0 ? chatMessages[i - 1] : null;
               const sameAuthor = prev && prev.senderId === msg.senderId;
               const showAuthorHeader = isGroupOrChannel && !msg.isOutgoing && !sameAuthor;
               const isStacked = isGroupOrChannel && !msg.isOutgoing && !!sameAuthor;
-              return createElement('div', {
+              if (!prev || !sameDay(prev.date, msg.date)) {
+                result.push(createElement('div', { key: 'date-' + msg.id, className: 'date-separator' },
+                  createElement('span', { className: 'date-separator-text' }, formatDate(msg.date))
+                ));
+              }
+              if (msg.contentType === 'service') {
+                result.push(createElement('div', { key: msg.id, className: 'message-service' },
+                  createElement('div', { className: 'message-service-text' }, msg.serviceText || msg.text)
+                ));
+                return;
+              }
+              const statusIcon = msg.isOutgoing && !msg.sendingState
+                ? createElement('span', { className: 'message-status' },
+                    msg.isRead
+                      ? createElement('svg', { width: '20', height: '14', viewBox: '0 0 20 14', fill: 'none', stroke: '#53bdeb', strokeWidth: '1.5', strokeLinecap: 'round', strokeLinejoin: 'round' },
+                          createElement('path', { d: 'M1 7l3 3 5-5' }),
+                          createElement('path', { d: 'M7 7l3 3 5-5' })
+                        )
+                      : createElement('svg', { width: '16', height: '14', viewBox: '0 0 16 14', fill: 'none', stroke: 'currentColor', strokeWidth: '1.5', strokeLinecap: 'round', strokeLinejoin: 'round' },
+                          createElement('path', { d: 'M3 7l3 3 5-5' })
+                        )
+                  )
+                : null;
+              result.push(createElement('div', {
                 key: msg.id,
                 className: `message-row ${msg.isOutgoing ? 'outgoing' : 'incoming'} ${isStacked ? 'stacked' : ''}`
               },
@@ -694,7 +822,7 @@ function App() {
                     msg.forwardInfo && createElement('div', { className: 'message-forward' }, 'Forwarded from ' + (getForwardName(msg.forwardInfo) || '...')),
                     msg.contentType === 'photo'
                       ? (msg.photoPath
-                          ? createElement('img', { src: toFileUrl(msg.photoPath), className: 'message-photo', style: msg.photoWidth ? { maxWidth: Math.min(msg.photoWidth, 300), maxHeight: Math.min(msg.photoHeight || 300, 300) } : {} })
+                          ? createElement('img', { src: toFileUrl(msg.photoPath), className: 'message-photo', style: msg.photoWidth ? { maxWidth: Math.min(msg.photoWidth, 300), maxHeight: Math.min(msg.photoHeight || 300, 300) } : {}, onClick: () => setPreviewPhoto(msg.photoPath!) })
                           : createElement('div', { className: 'message-photo-loading' }, 'Photo loading...'))
                       : msg.contentType === 'video'
                         ? createElement('div', { className: 'message-video' },
@@ -720,29 +848,21 @@ function App() {
                             )
                           : msg.contentType === 'audio'
                             ? createElement('div', { className: 'message-audio' },
-                                createElement('div', { className: 'message-audio-icon' },
-                                  createElement('svg', { width: '20', height: '20', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' },
-                                    createElement('path', { d: 'M9 18V5l12-2v13' }),
-                                    createElement('circle', { cx: '6', cy: '18', r: '3' }),
-                                    createElement('circle', { cx: '18', cy: '16', r: '3' })
-                                  )
-                                ),
-                                createElement('div', { className: 'message-audio-info' },
-                                  createElement('div', { className: 'message-audio-title' }, msg.media?.title || 'Audio'),
-                                  createElement('div', { className: 'message-audio-performer' }, msg.media?.performer || (msg.media?.duration ? formatDuration(msg.media.duration) : ''))
-                                )
+                                msg.filePaths?.[msg.media?.fileId]
+                                  ? createElement('audio', { src: toFileUrl(msg.filePaths[msg.media.fileId]), controls: true, className: 'message-audio-player', preload: 'metadata' })
+                                  : createElement('div', { className: 'message-media-loading' },
+                                      createElement('span', null, msg.media?.title || 'Audio ' + (msg.media?.duration ? formatDuration(msg.media.duration) : '')),
+                                      createElement('span', { className: 'media-download-hint' }, ' — loading')
+                                    )
                               )
                             : msg.contentType === 'voice'
                               ? createElement('div', { className: 'message-voice' },
-                                  createElement('div', { className: 'message-voice-icon' },
-                                    createElement('svg', { width: '20', height: '20', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2' },
-                                      createElement('path', { d: 'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z' }),
-                                      createElement('path', { d: 'M19 10v2a7 7 0 0 1-14 0v-2' }),
-                                      createElement('line', { x1: '12', y1: '19', x2: '12', y2: '23' }),
-                                      createElement('line', { x1: '8', y1: '23', x2: '16', y2: '23' })
-                                    )
-                                  ),
-                                  createElement('span', { className: 'message-voice-duration' }, msg.media?.duration ? formatDuration(msg.media.duration) : 'Voice')
+                                  msg.filePaths?.[msg.media?.fileId]
+                                    ? createElement('audio', { src: toFileUrl(msg.filePaths[msg.media.fileId]), controls: true, className: 'message-voice-player', preload: 'metadata' })
+                                    : createElement('div', { className: 'message-media-loading' },
+                                        createElement('span', null, msg.media?.duration ? formatDuration(msg.media.duration) : 'Voice'),
+                                        createElement('span', { className: 'media-download-hint' }, ' — loading')
+                                      )
                                 )
                               : msg.contentType === 'animation'
                                 ? createElement('div', { className: 'message-animation' },
@@ -750,17 +870,28 @@ function App() {
                                       ? createElement('video', { src: toFileUrl(msg.filePaths[msg.media.fileId]), autoPlay: true, loop: true, muted: true, className: 'message-animation-video', style: { maxWidth: 200, maxHeight: 200 } })
                                       : createElement('div', { className: 'message-media-loading' }, createElement('span', null, 'GIF loading...'))
                                   )
-                                : msg.contentType === 'sticker'
-                                  ? (msg.filePaths?.[msg.media?.fileId]
-                                      ? (msg.media?.format === 'webm'
-                                          ? createElement('video', { src: toFileUrl(msg.filePaths[msg.media.fileId]), autoPlay: true, loop: true, muted: true, className: 'message-sticker-video', style: { width: 120, height: 120 } })
-                                          : createElement('img', { src: toFileUrl(msg.filePaths[msg.media.fileId]), className: 'message-sticker-img' }))
-                                      : createElement('div', { className: 'message-media-loading' }, createElement('span', null, msg.media?.emoji || 'Sticker')))
-                                  : msg.contentType !== 'text'
-                                    ? createElement('div', { className: 'message-media-label' }, msg.contentType)
-                                    : null,
-                    msg.text ? createElement('div', { className: msg.contentType === 'photo' || msg.contentType === 'video' || msg.contentType === 'document' || msg.contentType === 'audio' || msg.contentType === 'voice' || msg.contentType === 'animation' ? 'message-caption' : '' }, ...renderText(msg.text, msg.entities)) : null,
-                    createElement('div', { className: 'message-time' }, formatTime(msg.date))
+                                : msg.contentType === 'videoNote'
+                                  ? createElement('div', { className: 'message-videonote' },
+                                      msg.filePaths?.[msg.media?.fileId]
+                                        ? createElement('video', { src: toFileUrl(msg.filePaths[msg.media.fileId]), controls: true, className: 'message-videonote-player', style: { width: msg.media?.size || 200, height: msg.media?.size || 200 } })
+                                        : createElement('div', { className: 'message-videonote-loading', style: { width: msg.media?.size || 200, height: msg.media?.size || 200 } },
+                                            createElement('span', null, 'Video note ' + (msg.media?.duration ? formatDuration(msg.media.duration) : ''))
+                                          )
+                                    )
+                                  : msg.contentType === 'sticker'
+                                    ? (msg.filePaths?.[msg.media?.fileId]
+                                        ? (msg.media?.format === 'webm'
+                                            ? createElement('video', { src: toFileUrl(msg.filePaths[msg.media.fileId]), autoPlay: true, loop: true, muted: true, className: 'message-sticker-video', style: { width: 120, height: 120 } })
+                                            : createElement('img', { src: toFileUrl(msg.filePaths[msg.media.fileId]), className: 'message-sticker-img' }))
+                                        : createElement('div', { className: 'message-media-loading' }, createElement('span', null, msg.media?.emoji || 'Sticker')))
+                                    : msg.contentType !== 'text'
+                                      ? createElement('div', { className: 'message-media-label' }, msg.contentType)
+                                      : null,
+                    msg.text ? createElement('div', { className: msg.contentType === 'photo' || msg.contentType === 'video' || msg.contentType === 'videoNote' || msg.contentType === 'document' || msg.contentType === 'audio' || msg.contentType === 'voice' || msg.contentType === 'animation' ? 'message-caption' : '' }, ...renderText(msg.text, msg.entities)) : null,
+                    createElement('div', { className: 'message-time' },
+                      formatMsgTime(msg.date),
+                      statusIcon
+                    )
                   ),
                   createElement('button', {
                     className: 'message-reply-btn',
@@ -772,8 +903,9 @@ function App() {
                     )
                   )
                 )
-              );
+              ));
             });
+            return result;
           })(),
           createElement('div', { ref: messagesEndRef })
         ),
@@ -818,6 +950,15 @@ function App() {
         ),
         createElement('h2', null, 'Select a chat'),
         createElement('p', null, 'Choose a conversation to start messaging')
+      )
+    ),
+    previewPhoto && createElement('div', { className: 'photo-preview', onClick: () => setPreviewPhoto(null) },
+      createElement('img', { src: toFileUrl(previewPhoto), className: 'photo-preview-img', onClick: (e: any) => e.stopPropagation() }),
+      createElement('button', { className: 'photo-preview-close', onClick: () => setPreviewPhoto(null) },
+        createElement('svg', { width: '28', height: '28', viewBox: '0 0 24 24', fill: 'none', stroke: 'white', strokeWidth: '2' },
+          createElement('line', { x1: '18', y1: '6', x2: '6', y2: '18' }),
+          createElement('line', { x1: '6', y1: '6', x2: '18', y2: '18' })
+        )
       )
     )
   );
@@ -875,6 +1016,26 @@ function formatTime(timestamp: number): string {
   if (diff < 86400000) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   else if (diff < 604800000) return date.toLocaleDateString([], { weekday: 'short' });
   else return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function formatMsgTime(timestamp: number): string {
+  const date = new Date(timestamp * 1000);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDate(timestamp: number): string {
+  const date = new Date(timestamp * 1000);
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  if (diff < 86400000 && date.getDate() === now.getDate()) return 'Today';
+  if (diff < 172800000 && date.getDate() === now.getDate() - 1) return 'Yesterday';
+  return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+}
+
+function sameDay(a: number, b: number): boolean {
+  const da = new Date(a * 1000);
+  const db = new Date(b * 1000);
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
 }
 
 const root = createRoot(document.getElementById('root')!);

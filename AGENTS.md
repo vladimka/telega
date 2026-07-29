@@ -24,12 +24,24 @@
 | `npm run test:coverage` | Vitest with v8 coverage |
 | `npm run build:main` | `tsc -p tsconfig.main.json` (CommonJS to `dist/main/`) |
 | `npm run build:renderer` | `vite build` (root `src/renderer/`, output `dist/renderer/`) |
+| `npm run pack` | electron-builder --dir (package to dir) |
+| `npm run dist` | electron-builder (full installer) |
 
 ## Setup
 
 - Requires `.env` with `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` (copy `.env.example`)
 - TDLib native binary auto-downloaded by `prebuilt-tdlib` on `npm install`
 - Windows paths: use `toFileUrl()` — prepends `file:///` and normalizes backslashes
+
+## CI / GitHub Actions
+
+- Workflow: `.github/workflows/build.yml`
+- **check** → lint + test (ubuntu)
+- **build** → `npm run dist` on ubuntu/windows/macos (matrix); main process only, renderer skipped
+- **release** → auto-creates tag `v{pkg.version}-build.{run_number}` and release on push to main/master
+- On retry, `gh release upload --clobber` overwrites existing assets (release already exists)
+- Ubuntu 24.04 (Noble) renames libs: `libasound2t64`, `libgtk-3-0t64` (not `libasound2`, `libgtk-3-0`)
+- `electron` must be in `devDependencies`, not `dependencies` (electron-builder requirement)
 
 ## TDLib Quirks
 
@@ -59,9 +71,17 @@
 - Infinite scroll: `loadOlderMessages()` on `scrollTop <= 50`; scroll position preserved with `el.scrollTop = el.scrollHeight - prevScrollHeight + prevScrollTop`
 - Text link entities extracted from `formattedText.entities` — rendered via `renderText()` which wraps URLs/emails/phones in `<a>` with `shell.openExternal`
 
-## Tests
+## Tests & Tooling
 
-- Vitest with jsdom
+- Vitest with jsdom; use `jsdom@^25.0.0` (v30 breaks with undici)
+- `formatTime` uses `hour12: false` and fixed `'en-US'` locale — CI runs in en-US, 12-hour format fails test regex
+- ESLint config avoids `eslint-plugin-react-refresh` (not in deps, not needed — project uses `createElement`)
 - Test files: `src/**/*.test.ts` or `src/**/*.test.tsx`
 - Setup: `src/renderer/test/setup.ts` mocks `window.tdlib` and `window.ipcRenderer`
 - Only renderer utility functions have tests; no component or main process tests
+
+## Windows Build Notes
+
+- On stock Windows (no Developer Mode), `electron-builder --dir` / `npm run dist` fails while extracting `winCodeSign` — its 7z archive contains macOS symlinks that 7-Zip can't create without symlink privileges
+- Fixes: run terminal **as Administrator**, or enable **Developer Mode** (Settings → Privacy & security → For developers), or delete the cached archive and use a non-Windows CI
+- `npm run start:dev` (run from source) never needs electron-builder — usable on any platform
