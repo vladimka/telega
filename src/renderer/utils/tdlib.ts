@@ -11,11 +11,11 @@ export function formatTime(timestamp: number): string {
   const diff = now.getTime() - date.getTime();
 
   if (diff < 86400000) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
   } else if (diff < 604800000) {
-    return date.toLocaleDateString([], { weekday: 'short' });
+    return date.toLocaleDateString('en-US', { weekday: 'short' });
   } else {
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
 }
 
